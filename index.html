@@ -44,6 +44,7 @@ summary{color:var(--sub);cursor:pointer}
 </head>
 <body>
 <main>
+  <div id="boot" class="hint">불러오는 중…</div>
   <form id="login" hidden>
     <h1>하객 확인</h1>
     <input id="em" type="email" placeholder="이메일" autocomplete="username" required>
@@ -71,6 +72,12 @@ summary{color:var(--sub);cursor:pointer}
   </section>
 </main>
 
+<script>
+window.addEventListener('error', function (e) {
+  var b = document.getElementById('boot');
+  if (b) { b.hidden = false; b.style.color = '#b3402f'; b.textContent = '오류: ' + e.message; }
+});
+</script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
@@ -89,7 +96,7 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 // 모바일 통신망·일부 브라우저에서 실시간 연결이 막히는 경우를 자동으로 우회
-db.settings({experimentalForceLongPolling: true, merge: true});
+db.settings({experimentalForceLongPolling: true, experimentalAutoDetectLongPolling: false, merge: true});
 const col = db.collection('guests');
 const $ = id => document.getElementById(id);
 let guests = [], unsub = null, live = false, polledAt = 0, pollTimer = null;
@@ -104,7 +111,7 @@ async function poll() {
     guests = s.docs.map(d => ({id: d.id, ...d.data()}));
     polledAt = Date.now(); $('diag').textContent = '';
   } catch (e) {
-    $('diag').textContent = '연결 진단: ' + (e.code ? e.code + ' – ' : '') + e.message;
+    $('diag').textContent = '연결 진단: ' + (e.code ? e.code + ' – ' : '') + e.message + ' (프로젝트: ' + firebaseConfig.projectId + ')';
   }
   render();
 }
@@ -123,6 +130,7 @@ $('login').addEventListener('submit', async e => {
 $('logout').onclick = () => auth.signOut();
 
 auth.onAuthStateChanged(user => {
+  $('boot').hidden = true;
   $('login').hidden = !!user;
   $('app').hidden = !user;
   if (unsub) { unsub(); unsub = null; }
