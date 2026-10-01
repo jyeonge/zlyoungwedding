@@ -58,6 +58,7 @@ summary{color:var(--sub);cursor:pointer}
     <h1>하객 확인</h1>
     <div class="stats" id="stats">불러오는 중…</div>
     <div class="err" id="diag"></div>
+    <div class="err" id="diag2"></div>
     <input id="q" type="text" placeholder="이름 입력" autocomplete="off" autocapitalize="off" enterkeyhint="search">
     <div id="results"></div>
 
@@ -67,6 +68,7 @@ summary{color:var(--sub);cursor:pointer}
         <small>시트 구성: 위쪽에 구분(지영·아빠·엄마), 그 아래 이름·계좌이체·인원 열. 다시 업로드해도 이미 체크한 발행 기록은 유지돼요.</small>
         <input id="file" type="file" accept=".xlsx,.xls,.csv">
         <button id="export" class="ghost" type="button">현재 상태 엑셀로 백업</button>
+        <button id="diagBtn" class="ghost" type="button">연결 진단 실행</button>
         <button id="logout" class="ghost" type="button">로그아웃</button>
       </div>
     </details>
@@ -130,6 +132,20 @@ $('login').addEventListener('submit', async e => {
 });
 $('logout').onclick = () => signOut(auth);
 
+// SDK와 별개로 Firestore 서버에 직접 요청해서 정확한 거부 사유를 확인
+let restTried = false;
+async function restCheck() {
+  $('diag2').textContent = '서버 직접 진단 중…';
+  try {
+    const tok = auth.currentUser ? await auth.currentUser.getIdToken() : '';
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${DB_ID}/documents/guests?pageSize=1&key=${firebaseConfig.apiKey}`;
+    const r = await withTimeout(fetch(url, {headers: {Authorization: 'Bearer ' + tok}}), 10000, '10초 안에 응답 없음 (이 네트워크에서 firestore.googleapis.com 접속이 막혔을 수 있음)');
+    const j = await r.json().catch(() => ({}));
+    $('diag2').textContent = '직접 진단: HTTP ' + r.status + (j.error ? ` / ${j.error.status || ''} / ${j.error.message || ''}` : ' / 정상');
+  } catch (e) { $('diag2').textContent = '직접 진단: ' + e.message; }
+}
+$('diagBtn').onclick = restCheck;
+
 // 실시간 연결이 막힌 기기를 위한 보조 수단: 5초마다 서버에서 직접 가져옴
 async function poll() {
   if (live) { $('diag').textContent = ''; return; }
@@ -137,7 +153,10 @@ async function poll() {
     const s = await withTimeout(getDocsFromServer(col), 8000, '서버 응답 없음(8초)');
     guests = s.docs.map(d => ({id: d.id, ...d.data()}));
     polledAt = Date.now(); $('diag').textContent = '';
-  } catch (e) { $('diag').textContent = '연결 진단: ' + diagText(e); }
+  } catch (e) {
+    $('diag').textContent = '연결 진단: ' + diagText(e);
+    if (!restTried) { restTried = true; restCheck(); }
+  }
   render();
 }
 
