@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>하객 확인</title>
+<style>
+:root{--bg:#eef1ee;--card:#fff;--ink:#1c2a24;--sub:#66756d;--line:#d9e0db;--accent:#2e5e4b;--done:#b8860b;--danger:#b3402f}
+@media (prefers-color-scheme:dark){:root{--bg:#141a17;--card:#1e2723;--ink:#e8eee9;--sub:#97a69d;--line:#2f3b35;--accent:#6fb894;--done:#e0b34a;--danger:#e57a68}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom))}
+main{max-width:520px;margin:0 auto}
+h1{font-size:20px;margin:4px 0 2px}
+.stats{color:var(--sub);font-size:14px;margin-bottom:14px}
+input,button{font:inherit}
+input[type=text],input[type=email],input[type=password],input[type=number]{width:100%;padding:14px;border:1.5px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink)}
+input:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#q{font-size:20px;padding:16px}
+button{border:0;border-radius:12px;padding:14px 16px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer}
+button.ghost{background:transparent;color:var(--sub);border:1.5px solid var(--line)}
+button.danger{background:transparent;color:var(--danger);border:1.5px solid var(--danger)}
+.hint{color:var(--sub);text-align:center;padding:40px 0}
+.card{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:16px;margin-top:12px}
+.card.issued{border-color:var(--done)}
+.name{font-size:24px;font-weight:700}
+.rel{color:var(--sub);margin-bottom:10px}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0 0 14px}
+dt{color:var(--sub)}dd{margin:0;font-weight:600}
+.row{display:flex;gap:8px;align-items:center}
+.row label{white-space:nowrap;color:var(--sub)}
+.row input{width:80px;text-align:center}
+.row button{flex:1}
+.badge{color:var(--done);font-weight:700}
+details{margin-top:28px;border-top:1px solid var(--line);padding-top:12px}
+summary{color:var(--sub);cursor:pointer}
+.admin{display:grid;gap:10px;margin-top:12px}
+.admin small{color:var(--sub)}
+#login{display:grid;gap:10px;margin-top:20vh}
+.err{color:var(--danger);min-height:1.5em}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <form id="login" hidden>
+    <h1>하객 확인</h1>
+    <input id="em" type="email" placeholder="이메일" autocomplete="username" required>
+    <input id="pw" type="password" placeholder="비밀번호" autocomplete="current-password" required>
+    <button type="submit">로그인</button>
+    <div class="err" id="loginErr"></div>
+  </form>
+
+  <section id="app" hidden>
+    <h1>하객 확인</h1>
+    <div class="stats" id="stats">불러오는 중…</div>
+    <input id="q" type="text" placeholder="이름 입력" autocomplete="off" autocapitalize="off" enterkeyhint="search">
+    <div id="results"><div class="hint">이름을 입력하면 바로 찾아드려요</div></div>
+
+    <details>
+      <summary>관리 (명단 업로드 · 백업)</summary>
+      <div class="admin">
+        <small>시트 구성: 위쪽에 구분(지영·아빠·엄마), 그 아래 이름·계좌이체·인원 열. 다시 업로드해도 이미 체크한 발행 기록은 유지돼요.</small>
+        <input id="file" type="file" accept=".xlsx,.xls,.csv">
+        <button id="export" class="ghost" type="button">현재 상태 엑셀로 백업</button>
+        <button id="logout" class="ghost" type="button">로그아웃</button>
+      </div>
+    </details>
+  </section>
+</main>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+// ▼▼ Firebase 콘솔에서 복사한 설정으로 교체하세요 ▼▼
+const firebaseConfig = {
+  apiKey: "AIzaSyAdblBQTRbVBRBgp5t7NDKFoAGbWh-aQRQ",
+  authDomain: "project-1233710301499315315.firebaseapp.com",
+  projectId: "project-1233710301499315315",
+  appId: "1:295126009229:web:95e21a232fa145c3b769c4"
+};
+// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+const col = db.collection('guests');
+const $ = id => document.getElementById(id);
+let guests = [], unsub = null;
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const norm = s => String(s ?? '').replace(/\s+/g, '').toLowerCase();
+const fmtTime = ts => ts && ts.toDate ? ts.toDate().toLocaleString('ko-KR', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+
+/* 로그인 */
+$('login').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('loginErr').textContent = '';
+  try { await auth.signInWithEmailAndPassword($('em').value.trim(), $('pw').value); }
+  catch { $('loginErr').textContent = '이메일 또는 비밀번호를 확인해주세요.'; }
+});
+$('logout').onclick = () => auth.signOut();
+
+auth.onAuthStateChanged(user => {
+  $('login').hidden = !!user;
+  $('app').hidden = !user;
+  if (unsub) { unsub(); unsub = null; }
+  if (user) {
+    unsub = col.onSnapshot(snap => {
+      guests = snap.docs.map(d => ({id: d.id, ...d.data()}));
+      render();
+    }, err => { $('stats').textContent = '불러오기 실패: ' + err.message; });
+  }
+});
+
+/* 검색 · 표시 */
+$('q').addEventListener('input', render);
+
+function render() {
+  const total = guests.length;
+  const done = guests.filter(g => g.issued).length;
+  const tickets = guests.reduce((a, g) => a + (g.issued ? (g.issuedCount || 0) : 0), 0);
+  $('stats').textContent = `명단 ${total}명 · 발행 ${done}명 (식권 ${tickets}장)`;
+
+  const q = norm($('q').value);
+  const box = $('results');
+  if (!q) { box.innerHTML = '<div class="hint">이름을 입력하면 바로 찾아드려요</div>'; return; }
+
+  const hits = guests.filter(g => norm(g.name).includes(q))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ko'));
+  if (!hits.length) {
+    box.innerHTML = '<div class="card"><div class="name">명단에 없음</div><div class="rel">입력한 이름과 일치하는 하객이 없어요. 철자를 확인하거나 성만 입력해 보세요.</div></div>';
+    return;
+  }
+  box.innerHTML = hits.map(card).join('');
+}
+
+function card(g) {
+  const id = esc(g.id);
+  const action = g.issued
+    ? `<div class="row"><span class="badge">발행 완료 ${esc(g.issuedCount)}장 · ${esc(fmtTime(g.issuedAt))}</span>
+         <button class="danger" data-act="cancel" data-id="${id}" style="flex:none">취소</button></div>`
+    : `<div class="row"><label for="n-${id}">발행</label>
+         <input id="n-${id}" type="number" inputmode="numeric" min="0" value="${esc(g.expected ?? 1)}">
+         <label for="n-${id}">장</label>
+         <button data-act="issue" data-id="${id}">식권 발행 완료</button></div>`;
+  return `<div class="card ${g.issued ? 'issued' : ''}">
+    <div class="name">${esc(g.name)}</div>
+    <div class="rel">${esc(g.relation) || '관계 미입력'}</div>
+    <dl><dt>계좌이체</dt><dd>${esc(g.transfer) || '-'}</dd>
+        <dt>예상 식권</dt><dd>${esc(g.expected ?? '-')}장</dd></dl>
+    ${action}</div>`;
+}
+
+$('results').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const ref = col.doc(b.dataset.id);
+  try {
+    if (b.dataset.act === 'issue') {
+      const n = parseInt($('n-' + b.dataset.id).value, 10);
+      if (!(n >= 0)) { alert('식권 장수를 확인해주세요.'); return; }
+      b.disabled = true;
+      await db.runTransaction(async t => {
+        const s = await t.get(ref);
+        if (s.data().issued) throw new Error('already');
+        t.update(ref, {issued: true, issuedCount: n, issuedAt: firebase.firestore.FieldValue.serverTimestamp()});
+      });
+    } else if (confirm('발행 기록을 취소할까요?')) {
+      await ref.update({issued: false, issuedCount: firebase.firestore.FieldValue.delete(), issuedAt: firebase.firestore.FieldValue.delete()});
+    }
+  } catch (err) {
+    alert(err.message === 'already' ? '다른 기기에서 이미 발행 처리됐어요.' : '저장 실패: ' + err.message);
+    render();
+  }
+});
+
+/* 엑셀 업로드 */
+$('file').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const wb = XLSX.read(await f.arrayBuffer(), {type: 'array'});
+    const grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header: 1, defval: ''});
+    const cell = (r, c) => String((grid[r] || [])[c] ?? '').trim();
+    const maxC = Math.max(0, ...grid.map(r => r.length));
+    const hr = grid.findIndex(r => r.some(v => norm(v) === '이름'));
+    if (hr < 0) { alert('"이름" 열 제목을 찾지 못했어요.'); return; }
+    const seen = {}, list = [], summary = {};
+    for (let c = 0; c < maxC; c++) {
+      if (norm(cell(hr, c)) !== '이름') continue;
+      let end = c + 1;                       // 이 블록은 다음 '이름' 열 직전까지
+      while (end < maxC && norm(cell(hr, end)) !== '이름') end++;
+      const find = k => { for (let j = c; j < end; j++) if (norm(cell(hr, j)).includes(k)) return j; return -1; };
+      const tc = find('계좌'), ec = Math.max(find('인원'), find('식권')), rc = find('관계');
+      let label = '';                        // 헤더 위쪽의 구분(지영/아빠/엄마)
+      for (let r = hr - 1; r >= 0 && !label; r--) {
+        const v = cell(r, c);
+        if (v && !/총|합계|^[\d,.]+$/.test(v)) label = v;
+      }
+      for (let r = hr + 1; r < grid.length; r++) {
+        const name = cell(r, c);
+        if (!name) continue;
+        const relation = label || (rc >= 0 ? cell(r, rc) : '');
+        let id = (name + '_' + relation).replace(/[\/\s.]+/g, '-');
+        seen[id] = (seen[id] || 0) + 1;
+        if (seen[id] > 1) id += '-' + seen[id];
+        const exp = parseInt(ec >= 0 ? cell(r, ec) : '', 10);
+        const expected = isNaN(exp) ? 1 : exp;
+        list.push({id, name, relation, transfer: tc >= 0 ? cell(r, tc) : '', expected});
+        const k = relation || '(구분 없음)';
+        summary[k] = summary[k] || {n: 0, t: 0};
+        summary[k].n++; summary[k].t += expected;
+      }
+    }
+    if (!list.length) { alert('명단을 찾지 못했어요. 시트 구성을 확인해주세요.'); return; }
+    const totalT = list.reduce((a, g) => a + g.expected, 0);
+    const lines = Object.entries(summary).map(([k, v]) => `${k}: ${v.n}건 / 식권 ${v.t}장`).join('\n');
+    if (!confirm(`${lines}\n합계: ${list.length}건 / 식권 ${totalT}장\n\n업로드할까요? (기존 발행 기록은 유지됩니다)`)) return;
+    for (let i = 0; i < list.length; i += 400) {
+      const batch = db.batch();
+      list.slice(i, i + 400).forEach(({id, ...d}) => batch.set(col.doc(id), d, {merge: true}));
+      await batch.commit();
+    }
+    const ids = new Set(list.map(g => g.id));
+    const stale = guests.filter(g => !ids.has(g.id) && !g.issued);
+    if (stale.length && confirm(`엑셀에 없는 하객 ${stale.length}명이 사이트에 남아 있어요. 삭제할까요? (발행 기록이 있는 사람은 유지)`)) {
+      for (let i = 0; i < stale.length; i += 400) {
+        const batch = db.batch();
+        stale.slice(i, i + 400).forEach(g => batch.delete(col.doc(g.id)));
+        await batch.commit();
+      }
+    }
+    alert(`${list.length}건 업로드 완료`);
+  } catch (err) { alert('업로드 실패: ' + err.message); }
+  e.target.value = '';
+});
+
+/* 백업 */
+$('export').onclick = () => {
+  const data = guests.map(g => ({
+    '이름': g.name, '계좌이체여부': g.transfer, '관계': g.relation, '예상식권갯수': g.expected,
+    '발행여부': g.issued ? 'O' : '', '발행장수': g.issued ? g.issuedCount : '', '발행시간': fmtTime(g.issuedAt)
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), '하객');
+  XLSX.writeFile(wb, '하객명단_백업.xlsx');
+};
+</script>
+</body>
+</html>
