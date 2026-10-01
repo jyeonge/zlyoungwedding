@@ -55,6 +55,7 @@ summary{color:var(--sub);cursor:pointer}
   <section id="app" hidden>
     <h1>하객 확인</h1>
     <div class="stats" id="stats">불러오는 중…</div>
+    <div class="err" id="diag"></div>
     <input id="q" type="text" placeholder="이름 입력" autocomplete="off" autocapitalize="off" enterkeyhint="search">
     <div id="results"><div class="hint">이름을 입력하면 바로 찾아드려요</div></div>
 
@@ -88,10 +89,25 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 // 모바일 통신망·일부 브라우저에서 실시간 연결이 막히는 경우를 자동으로 우회
-db.settings({experimentalAutoDetectLongPolling: true, merge: true});
+db.settings({experimentalForceLongPolling: true, merge: true});
 const col = db.collection('guests');
 const $ = id => document.getElementById(id);
-let guests = [], unsub = null, fromCache = true;
+let guests = [], unsub = null, live = false, polledAt = 0, pollTimer = null;
+const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
+const statusOK = () => live || (Date.now() - polledAt < 12000);
+
+// 실시간 연결이 막힌 기기를 위한 보조 수단: 5초마다 서버에서 직접 가져옴
+async function poll() {
+  if (live) { $('diag').textContent = ''; return; }
+  try {
+    const s = await withTimeout(col.get({source: 'server'}), 8000, '서버 응답 없음(8초)');
+    guests = s.docs.map(d => ({id: d.id, ...d.data()}));
+    polledAt = Date.now(); $('diag').textContent = '';
+  } catch (e) {
+    $('diag').textContent = '연결 진단: ' + (e.code ? e.code + ' – ' : '') + e.message;
+  }
+  render();
+}
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm = s => String(s ?? '').replace(/\s+/g, '').toLowerCase();
@@ -110,12 +126,14 @@ auth.onAuthStateChanged(user => {
   $('login').hidden = !!user;
   $('app').hidden = !user;
   if (unsub) { unsub(); unsub = null; }
+  clearInterval(pollTimer); live = false; polledAt = 0;
   if (user) {
+    pollTimer = setInterval(poll, 5000); setTimeout(poll, 1500);
     unsub = col.onSnapshot({includeMetadataChanges: true}, snap => {
       guests = snap.docs.map(d => ({id: d.id, ...d.data()}));
-      fromCache = snap.metadata.fromCache;
+      live = !snap.metadata.fromCache;
       render();
-    }, err => { $('stats').textContent = '불러오기 실패: ' + err.message; });
+    }, err => { $('diag').textContent = '불러오기 실패: ' + (err.code || '') + ' ' + err.message; });
   }
 });
 
@@ -126,12 +144,12 @@ function render() {
   const total = guests.length;
   const done = guests.filter(g => g.issued).length;
   const tickets = guests.reduce((a, g) => a + (g.issued ? (g.issuedCount || 0) : 0), 0);
-  $('stats').textContent = `명단 ${total}명 · 발행 ${done}명 (식권 ${tickets}장) · ` + (fromCache ? '⚠ 서버 연결 확인 중' : '✓ 동기화됨');
+  $('stats').textContent = `명단 ${total}명 · 발행 ${done}명 (식권 ${tickets}장) · ` + (statusOK() ? '✓ 동기화됨' : '⚠ 서버 연결 확인 중');
 
   const q = norm($('q').value);
   const box = $('results');
   if (!total) {
-    box.innerHTML = `<div class="hint">${fromCache
+    box.innerHTML = `<div class="hint">${!statusOK()
       ? '서버에서 명단을 받아오는 중이에요…<br>계속 안 되면 카카오톡 등 앱 안의 브라우저 대신 크롬/사파리로 열어보세요.'
       : '명단이 비어 있어요. 아래 관리에서 엑셀을 업로드해주세요.'}</div>`;
     return;
@@ -173,11 +191,11 @@ $('results').addEventListener('click', async e => {
       const n = parseInt($('n-' + b.dataset.id).value, 10);
       if (!(n >= 0)) { alert('식권 장수를 확인해주세요.'); return; }
       b.disabled = true;
-      await db.runTransaction(async t => {
+      await withTimeout(db.runTransaction(async t => {
         const s = await t.get(ref);
         if (s.data().issued) throw new Error('already');
         t.update(ref, {issued: true, issuedCount: n, issuedAt: firebase.firestore.FieldValue.serverTimestamp()});
-      });
+      }), 15000, '서버 응답이 없어요. 연결을 확인해주세요.');
     } else if (confirm('발행 기록을 취소할까요?')) {
       await ref.update({issued: false, issuedCount: firebase.firestore.FieldValue.delete(), issuedAt: firebase.firestore.FieldValue.delete()});
     }
@@ -232,7 +250,7 @@ $('file').addEventListener('change', async e => {
     for (let i = 0; i < list.length; i += 400) {
       const batch = db.batch();
       list.slice(i, i + 400).forEach(({id, ...d}) => batch.set(col.doc(id), d, {merge: true}));
-      await batch.commit();
+      await withTimeout(batch.commit(), 20000, '서버에 저장되지 않았어요. 연결을 확인하고 다시 시도해주세요.');
     }
     const ids = new Set(list.map(g => g.id));
     const stale = guests.filter(g => !ids.has(g.id) && !g.issued);
@@ -240,7 +258,7 @@ $('file').addEventListener('change', async e => {
       for (let i = 0; i < stale.length; i += 400) {
         const batch = db.batch();
         stale.slice(i, i + 400).forEach(g => batch.delete(col.doc(g.id)));
-        await batch.commit();
+        await withTimeout(batch.commit(), 20000, '서버에 저장되지 않았어요. 연결을 확인하고 다시 시도해주세요.');
       }
     }
     alert(`${list.length}건 업로드 완료`);
