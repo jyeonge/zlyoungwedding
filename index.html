@@ -13,7 +13,7 @@ html,body{margin:0}
 body{background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom))}
 main{max-width:520px;margin:0 auto}
 h1{font-size:20px;margin:4px 0 2px}
-.stats{color:var(--sub);font-size:14px;margin-bottom:14px}
+.stats{color:var(--sub);font-size:14px;margin-bottom:6px}
 input,button{font:inherit}
 input[type=text],input[type=email],input[type=password],input[type=number]{width:100%;padding:14px;border:1.5px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink)}
 input:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
@@ -38,13 +38,14 @@ summary{color:var(--sub);cursor:pointer}
 .admin{display:grid;gap:10px;margin-top:12px}
 .admin small{color:var(--sub)}
 #login{display:grid;gap:10px;margin-top:20vh}
-.err{color:var(--danger);min-height:1.5em}
+.err{color:var(--danger);font-size:14px;margin-bottom:10px;word-break:break-all}
 [hidden]{display:none!important}
 </style>
 </head>
 <body>
 <main>
   <div id="boot" class="hint">불러오는 중…</div>
+
   <form id="login" hidden>
     <h1>하객 확인</h1>
     <input id="em" type="email" placeholder="이메일" autocomplete="username" required>
@@ -58,7 +59,7 @@ summary{color:var(--sub);cursor:pointer}
     <div class="stats" id="stats">불러오는 중…</div>
     <div class="err" id="diag"></div>
     <input id="q" type="text" placeholder="이름 입력" autocomplete="off" autocapitalize="off" enterkeyhint="search">
-    <div id="results"><div class="hint">이름을 입력하면 바로 찾아드려요</div></div>
+    <div id="results"></div>
 
     <details>
       <summary>관리 (명단 업로드 · 백업)</summary>
@@ -77,59 +78,70 @@ window.addEventListener('error', function (e) {
   var b = document.getElementById('boot');
   if (b) { b.hidden = false; b.style.color = '#b3402f'; b.textContent = '오류: ' + e.message; }
 });
+setTimeout(function () {
+  var b = document.getElementById('boot');
+  if (b && !b.hidden && b.textContent === '불러오는 중…') {
+    b.style.color = '#b3402f';
+    b.textContent = '불러오지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.';
+  }
+}, 12000);
 </script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<script>
-// ▼▼ Firebase 콘솔에서 복사한 설정으로 교체하세요 ▼▼
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { initializeFirestore, collection, doc, onSnapshot, getDocsFromServer, writeBatch,
+         runTransaction, updateDoc, deleteField, serverTimestamp }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
 const firebaseConfig = {
   apiKey: "AIzaSyAdblBQTRbVBRBgp5t7NDKFoAGbWh-aQRQ",
   authDomain: "project-1233710301499315315.firebaseapp.com",
   projectId: "project-1233710301499315315",
+  storageBucket: "project-1233710301499315315.firebasestorage.app",
+  messagingSenderId: "295126009229",
   appId: "1:295126009229:web:95e21a232fa145c3b769c4"
 };
-// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+const DB_ID = "ziyoungwedding";   // (default)가 아닌 이름 붙은 데이터베이스
 
-firebase.initializeApp(firebaseConfig);
-const auth = firebase.auth();
-const db = firebase.firestore();
-// 모바일 통신망·일부 브라우저에서 실시간 연결이 막히는 경우를 자동으로 우회
-db.settings({experimentalForceLongPolling: true, experimentalAutoDetectLongPolling: false, merge: true});
-const col = db.collection('guests');
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+// 모바일 통신망·일부 브라우저에서 실시간 연결이 막히는 경우를 피하기 위해 long polling 사용
+const db = initializeFirestore(app, { experimentalForceLongPolling: true }, DB_ID);
+const col = collection(db, 'guests');
+
 const $ = id => document.getElementById(id);
-let guests = [], unsub = null, live = false, polledAt = 0, pollTimer = null;
-const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
-const statusOK = () => live || (Date.now() - polledAt < 12000);
-
-// 실시간 연결이 막힌 기기를 위한 보조 수단: 5초마다 서버에서 직접 가져옴
-async function poll() {
-  if (live) { $('diag').textContent = ''; return; }
-  try {
-    const s = await withTimeout(col.get({source: 'server'}), 8000, '서버 응답 없음(8초)');
-    guests = s.docs.map(d => ({id: d.id, ...d.data()}));
-    polledAt = Date.now(); $('diag').textContent = '';
-  } catch (e) {
-    $('diag').textContent = '연결 진단: ' + (e.code ? e.code + ' – ' : '') + e.message + ' (프로젝트: ' + firebaseConfig.projectId + ')';
-  }
-  render();
-}
-
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm = s => String(s ?? '').replace(/\s+/g, '').toLowerCase();
 const fmtTime = ts => ts && ts.toDate ? ts.toDate().toLocaleString('ko-KR', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
+
+let guests = [], unsub = null, live = false, polledAt = 0, pollTimer = null;
+const statusOK = () => live || (Date.now() - polledAt < 12000);
+const diagText = e => (e.code ? e.code + ' – ' : '') + e.message + ` (프로젝트: ${firebaseConfig.projectId} / DB: ${DB_ID})`;
 
 /* 로그인 */
 $('login').addEventListener('submit', async e => {
   e.preventDefault();
   $('loginErr').textContent = '';
-  try { await auth.signInWithEmailAndPassword($('em').value.trim(), $('pw').value); }
+  try { await signInWithEmailAndPassword(auth, $('em').value.trim(), $('pw').value); }
   catch { $('loginErr').textContent = '이메일 또는 비밀번호를 확인해주세요.'; }
 });
-$('logout').onclick = () => auth.signOut();
+$('logout').onclick = () => signOut(auth);
 
-auth.onAuthStateChanged(user => {
+// 실시간 연결이 막힌 기기를 위한 보조 수단: 5초마다 서버에서 직접 가져옴
+async function poll() {
+  if (live) { $('diag').textContent = ''; return; }
+  try {
+    const s = await withTimeout(getDocsFromServer(col), 8000, '서버 응답 없음(8초)');
+    guests = s.docs.map(d => ({id: d.id, ...d.data()}));
+    polledAt = Date.now(); $('diag').textContent = '';
+  } catch (e) { $('diag').textContent = '연결 진단: ' + diagText(e); }
+  render();
+}
+
+onAuthStateChanged(auth, user => {
   $('boot').hidden = true;
   $('login').hidden = !!user;
   $('app').hidden = !user;
@@ -137,11 +149,11 @@ auth.onAuthStateChanged(user => {
   clearInterval(pollTimer); live = false; polledAt = 0;
   if (user) {
     pollTimer = setInterval(poll, 5000); setTimeout(poll, 1500);
-    unsub = col.onSnapshot({includeMetadataChanges: true}, snap => {
+    unsub = onSnapshot(col, {includeMetadataChanges: true}, snap => {
       guests = snap.docs.map(d => ({id: d.id, ...d.data()}));
       live = !snap.metadata.fromCache;
       render();
-    }, err => { $('diag').textContent = '불러오기 실패: ' + (err.code || '') + ' ' + err.message; });
+    }, err => { $('diag').textContent = '불러오기 실패: ' + diagText(err); });
   }
 });
 
@@ -154,7 +166,6 @@ function render() {
   const tickets = guests.reduce((a, g) => a + (g.issued ? (g.issuedCount || 0) : 0), 0);
   $('stats').textContent = `명단 ${total}명 · 발행 ${done}명 (식권 ${tickets}장) · ` + (statusOK() ? '✓ 동기화됨' : '⚠ 서버 연결 확인 중');
 
-  const q = norm($('q').value);
   const box = $('results');
   if (!total) {
     box.innerHTML = `<div class="hint">${!statusOK()
@@ -162,6 +173,7 @@ function render() {
       : '명단이 비어 있어요. 아래 관리에서 엑셀을 업로드해주세요.'}</div>`;
     return;
   }
+  const q = norm($('q').value);
   if (!q) { box.innerHTML = '<div class="hint">이름을 입력하면 바로 찾아드려요</div>'; return; }
 
   const hits = guests.filter(g => norm(g.name).includes(q))
@@ -193,19 +205,19 @@ function card(g) {
 $('results').addEventListener('click', async e => {
   const b = e.target.closest('button[data-act]');
   if (!b) return;
-  const ref = col.doc(b.dataset.id);
+  const ref = doc(col, b.dataset.id);
   try {
     if (b.dataset.act === 'issue') {
       const n = parseInt($('n-' + b.dataset.id).value, 10);
       if (!(n >= 0)) { alert('식권 장수를 확인해주세요.'); return; }
       b.disabled = true;
-      await withTimeout(db.runTransaction(async t => {
+      await withTimeout(runTransaction(db, async t => {
         const s = await t.get(ref);
         if (s.data().issued) throw new Error('already');
-        t.update(ref, {issued: true, issuedCount: n, issuedAt: firebase.firestore.FieldValue.serverTimestamp()});
+        t.update(ref, {issued: true, issuedCount: n, issuedAt: serverTimestamp()});
       }), 15000, '서버 응답이 없어요. 연결을 확인해주세요.');
     } else if (confirm('발행 기록을 취소할까요?')) {
-      await ref.update({issued: false, issuedCount: firebase.firestore.FieldValue.delete(), issuedAt: firebase.firestore.FieldValue.delete()});
+      await updateDoc(ref, {issued: false, issuedCount: deleteField(), issuedAt: deleteField()});
     }
   } catch (err) {
     alert(err.message === 'already' ? '다른 기기에서 이미 발행 처리됐어요.' : '저장 실패: ' + err.message);
@@ -213,7 +225,7 @@ $('results').addEventListener('click', async e => {
   }
 });
 
-/* 엑셀 업로드 */
+/* 엑셀 업로드 (지영 / 아빠 / 엄마 블록 구조) */
 $('file').addEventListener('change', async e => {
   const f = e.target.files[0];
   if (!f) return;
@@ -255,18 +267,20 @@ $('file').addEventListener('change', async e => {
     const totalT = list.reduce((a, g) => a + g.expected, 0);
     const lines = Object.entries(summary).map(([k, v]) => `${k}: ${v.n}건 / 식권 ${v.t}장`).join('\n');
     if (!confirm(`${lines}\n합계: ${list.length}건 / 식권 ${totalT}장\n\n업로드할까요? (기존 발행 기록은 유지됩니다)`)) return;
+
+    const fail = '서버에 저장되지 않았어요. 연결을 확인하고 다시 시도해주세요.';
     for (let i = 0; i < list.length; i += 400) {
-      const batch = db.batch();
-      list.slice(i, i + 400).forEach(({id, ...d}) => batch.set(col.doc(id), d, {merge: true}));
-      await withTimeout(batch.commit(), 20000, '서버에 저장되지 않았어요. 연결을 확인하고 다시 시도해주세요.');
+      const batch = writeBatch(db);
+      list.slice(i, i + 400).forEach(({id, ...d}) => batch.set(doc(col, id), d, {merge: true}));
+      await withTimeout(batch.commit(), 20000, fail);
     }
     const ids = new Set(list.map(g => g.id));
     const stale = guests.filter(g => !ids.has(g.id) && !g.issued);
     if (stale.length && confirm(`엑셀에 없는 하객 ${stale.length}명이 사이트에 남아 있어요. 삭제할까요? (발행 기록이 있는 사람은 유지)`)) {
       for (let i = 0; i < stale.length; i += 400) {
-        const batch = db.batch();
-        stale.slice(i, i + 400).forEach(g => batch.delete(col.doc(g.id)));
-        await withTimeout(batch.commit(), 20000, '서버에 저장되지 않았어요. 연결을 확인하고 다시 시도해주세요.');
+        const batch = writeBatch(db);
+        stale.slice(i, i + 400).forEach(g => batch.delete(doc(col, g.id)));
+        await withTimeout(batch.commit(), 20000, fail);
       }
     }
     alert(`${list.length}건 업로드 완료`);
