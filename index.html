@@ -25,7 +25,7 @@ button.danger{background:transparent;color:var(--danger);border:1.5px solid var(
 .card{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:16px;margin-top:12px}
 .card.issued{border-color:var(--done)}
 .name{font-size:24px;font-weight:700}
-.rel{color:var(--sub);margin-bottom:10px}
+.rel{color:var(--accent);font-weight:700;font-size:18px;margin-bottom:10px}
 dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0 0 14px}
 dt{color:var(--sub)}dd{margin:0;font-weight:600}
 .row{display:flex;gap:8px;align-items:center}
@@ -149,7 +149,7 @@ function card(g) {
          <button data-act="issue" data-id="${id}">식권 발행 완료</button></div>`;
   return `<div class="card ${g.issued ? 'issued' : ''}">
     <div class="name">${esc(g.name)}</div>
-    <div class="rel">${esc(g.relation) || '관계 미입력'}</div>
+    <div class="rel">관계: ${esc(g.relation) || '미입력'}</div>
     <dl><dt>계좌이체</dt><dd>${esc(g.transfer) || '-'}</dd>
         <dt>예상 식권</dt><dd>${esc(g.expected ?? '-')}장</dd></dl>
     ${action}</div>`;
